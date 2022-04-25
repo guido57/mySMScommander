@@ -20,13 +20,14 @@
 
 #define inputPin 33
 #define outputPin 26
+#define input1LedPin 2
+#define level1LedPin 4
 
 AutoConnect portal;
 AutoConnectConfig config;
-
-const char* settingsPageFile = "/settings_page.json";
 AutoConnectAux* settings_page;
 
+const char* settingsPageFile = "/settings_page.json";
 const char* settingsDataFile = "/settings_data.json";
 
 // JSONsetting contains the actual settings values
@@ -37,19 +38,9 @@ void CreateDefaultSettingsFile(){
   File settings_data_file = LITTLEFS.open(settingsDataFile, "w");
   settings_data_file.print(default_settings_string);
   settings_data_file.close();
-  
 }
 
-// This function is for redirect only.
-// The actual sending the HTML performs in PageBuilder.
-void sendRedirect(String uri) {
-  WebServer& ws = portal.host();
-  ws.sendHeader("Location", uri, true);
-  ws.send(302, "text/plain", "");
-  ws.client().stop();
-}
-
-
+// Save the settings updated by Save button on / (home page)
 String OnSettingsSave(AutoConnectAux& aux, PageArgument& args) {
   Serial.println("OnSettingsSave");
   // Open the settings file on the LITTLEFS
@@ -158,7 +149,16 @@ String OnSettingsLoad(AutoConnectAux& aux, PageArgument& args) {
       return String();
 }
 
-// this function will be called when an SMS is received
+
+// read the level in cm by ultrasonic sensor HC SR04
+int readLevel(){
+  
+  int level = hcsr04_getDistanceCm();
+  return level;
+
+}
+
+// this function is called when an SMS is received
 void rxSMS_callback(String * phonenum, String * datetime, String * SMSmessage){
   Serial.printf("callback: phonenum=%s message=%s\r\n",phonenum->c_str(), SMSmessage->c_str());
   SMSmessage->toUpperCase(); 
@@ -180,27 +180,26 @@ void rxSMS_callback(String * phonenum, String * datetime, String * SMSmessage){
     SaveSettingsToFile(); 
   }else{
     Serial.printf("%s asked %s\r\n",phonenum->c_str(), SMSmessage->c_str());
-    String msgL1 = JSONsettings["msgL1"].as<String>();
-    String msgH1 = JSONsettings["msgH1"].as<String>();
-    String input_message = (digitalRead(inputPin) == HIGH) ? msgL1 : msgH1;
+    String msgL1 = JSONsettings["msgL1"].as<String>() ;
+    String msgH1 = JSONsettings["msgH1"].as<String>() ; 
+    String input_message = (digitalRead(inputPin) == HIGH) ? msgH1 : msgL1;
+    int threshold = JSONsettings["threshold"].as<int>();
+    int level = readLevel();
     String msgLevelL1 = JSONsettings["msgLevelL1"].as<String>();
     String msgLevelH1 = JSONsettings["msgLevelH1"].as<String>();
-    String level_message = "the tank level is 110 cm";
-    String threshold_message = "threshold level is " + JSONsettings["threshold"].as<String>() + " cm";
+    String level_message = level > threshold ? msgLevelL1 : msgLevelH1;
+    String level_value_message = String("the tank level is ") + String(level) + String(" cm");
+    String threshold_message = "threshold level is " + String(threshold) + " cm";
     String out_message = String("Out is ") + ((digitalRead(outputPin) == HIGH) ? "OFF.": "ON."); 
 
-    String SMS_msg = input_message + level_message + threshold_message + out_message;
+    String SMS_msg =   input_message + String("\n") 
+                     + level_message + String("\n")
+                     + level_value_message + String("\n")
+                     + threshold_message + String("\n") 
+                     + out_message;
     gsm_sendSMS(*phonenum,SMS_msg);  
 
   }
-
-}
-
-// read the level in cm by ultrasonic sensor HC SR04
-int readLevel(){
-  
-  int level = hcsr04_getDistanceCm();
-  return level;
 
 }
 
@@ -216,6 +215,10 @@ void setup() {
   lastInputPinValue = HIGH;
   pinMode(outputPin,OUTPUT);
   digitalWrite(outputPin,HIGH); // yes, the relay is active LOW
+  pinMode(input1LedPin, OUTPUT);
+  digitalWrite(input1LedPin,HIGH); // the LED is Off
+  pinMode(level1LedPin, OUTPUT);
+  digitalWrite(level1LedPin,HIGH); // the LED is Off
   
   
   // Initialize LittleFS
@@ -250,7 +253,6 @@ void setup() {
   if (portal.begin()) {
     Serial.println("WiFi connected: " + WiFi.localIP().toString());
   }
-
   hcsr04_setup();
 
 }
@@ -259,25 +261,28 @@ void loop() {
 
   String phone1 = JSONsettings["phone1"].as<String>();
    
-  // check input pin
+  // check input1 pin
   String msgInput = "";
   int inputPinValue = digitalRead(inputPin);
+  digitalWrite(input1LedPin, inputPinValue == 0 ? LOW : HIGH );
   if( inputPinValue != lastInputPinValue){
     Serial.printf("inputPin changed from %d to %d\r\n",lastInputPinValue, inputPinValue);
+    
     bool sendOnChanged = JSONsettings["sendOnChanged1"].as<bool>();
     if(sendOnChanged){
       // read the actual settings values
       String msgL1 = JSONsettings["msgL1"].as<String>();
       String msgH1 = JSONsettings["msgH1"].as<String>();
-      msgInput = (inputPinValue == LOW) ? msgH1 : msgL1;
+      msgInput = (inputPinValue == LOW) ? msgL1 : msgH1;
     }
     lastInputPinValue = inputPinValue;
   }
 
-  // check input level
+  // check level1 (the ultrasonic sensor)
   String msgLevel = "";
   int levelValue = readLevel();
   int threshold = JSONsettings["threshold"].as<int>();
+  digitalWrite(level1LedPin, levelValue > threshold ? HIGH : LOW );
   if( (levelValue > threshold && lastLevelValue < threshold)  || 
       (levelValue < threshold && lastLevelValue > threshold)
   ){
@@ -288,7 +293,7 @@ void loop() {
       String phone1 = JSONsettings["phone1"].as<String>();
       String msgLevelL1 = JSONsettings["msgLevelL1"].as<String>();
       String msgLevelH1 = JSONsettings["msgLevelH1"].as<String>();
-      msgLevel += (levelValue > threshold) ? msgLevelH1 : msgLevelL1;
+      msgLevel += (levelValue > threshold) ? msgLevelL1 : msgLevelH1;
       // send the SMS
     }
 
